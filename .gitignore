@@ -31,3 +31,4 @@ bin
 # Miscellaneous
 *.log
 .clover
+built/
