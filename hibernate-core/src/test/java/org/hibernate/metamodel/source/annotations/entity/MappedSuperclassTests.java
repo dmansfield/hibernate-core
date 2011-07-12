@@ -23,49 +23,64 @@
  */
 package org.hibernate.metamodel.source.annotations.entity;
 
+import javax.persistence.AttributeOverride;
+import javax.persistence.AttributeOverrides;
 import javax.persistence.Entity;
 import javax.persistence.Id;
 import javax.persistence.MappedSuperclass;
 
 import org.junit.Test;
 
-import org.hibernate.action.internal.EntityIdentityInsertAction;
 import org.hibernate.metamodel.binding.AttributeBinding;
 import org.hibernate.metamodel.binding.EntityBinding;
-import org.hibernate.metamodel.binding.EntityIdentifier;
 import org.hibernate.metamodel.domain.NonEntity;
-import org.hibernate.metamodel.domain.Superclass;
+import org.hibernate.metamodel.relational.Column;
+import org.hibernate.metamodel.relational.SimpleValue;
+import org.hibernate.metamodel.relational.Tuple;
 
 import static junit.framework.Assert.assertEquals;
 import static junit.framework.Assert.assertNotNull;
 import static junit.framework.Assert.assertTrue;
 
 /**
- * Tests for {@code j.p.AttributeOverrides} and {@code j.p.AttributeOverride}.
+ * Tests for {@link javax.persistence.MappedSuperclass} {@link javax.persistence.AttributeOverrides}
+ * and {@link javax.persistence.AttributeOverride}.
  *
  * @author Hardy Ferentschik
  */
-public class MappedSuperclassWithAttributeOverrideTests extends BaseAnnotationBindingTestCase {
+public class MappedSuperclassTests extends BaseAnnotationBindingTestCase {
 	@Test
-	public void testMappedSuperclass() {
-		buildMetadataSources( MyMappedSuperClass.class, MyEntity.class );
-		EntityBinding binding = getEntityBinding( MyEntity.class );
-		assertEquals( "Wrong entity name", MyEntity.class.getName(), binding.getEntity().getName() );
-		assertEquals(
-				"Wrong entity name",
-				MyMappedSuperClass.class.getName(),
-				binding.getEntity().getSuperType().getName()
-		);
-		assertTrue( binding.getEntity().getSuperType() instanceof Superclass );
-		AttributeBinding nameBinding = binding.getAttributeBinding( "name" );
-		assertNotNull( "the name attribute should be bound to the subclass", nameBinding );
+	public void testSimpleAttributeOverrideInMappedSuperclass() {
+		buildMetadataSources( MyMappedSuperClass.class, MyEntity.class, MyMappedSuperClassBase.class );
 
-		AttributeBinding idBinding = binding.getEntityIdentifier().getValueBinding();
-		assertNotNull( "the id attribute should be bound", idBinding );
+		EntityBinding binding = getEntityBinding( MyEntity.class );
+		AttributeBinding nameBinding = binding.getAttributeBinding( "name" );
+		assertNotNull( "the name attribute should be bound to MyEntity", nameBinding );
+
+		Tuple tuple = (Tuple) nameBinding.getValue();
+		SimpleValue value = tuple.values().iterator().next();
+		assertTrue( value instanceof Column );
+		Column column = (Column) value;
+		assertEquals( "Wrong column name", "`MY_NAME`", column.getColumnName().toString() );
 	}
 
 	@Test
-	public void testNoEntity() {
+	public void testLastAttributeOverrideWins() {
+		buildMetadataSources( MyMappedSuperClass.class, MyEntity.class, MyMappedSuperClassBase.class );
+
+		EntityBinding binding = getEntityBinding( MyEntity.class );
+		AttributeBinding fooBinding = binding.getAttributeBinding( "foo" );
+		assertNotNull( "the foo attribute should be bound to MyEntity", fooBinding );
+
+		Tuple tuple = (Tuple) fooBinding.getValue();
+		SimpleValue value = tuple.values().iterator().next();
+		assertTrue( value instanceof Column );
+		Column column = (Column) value;
+		assertEquals( "Wrong column name", "`MY_FOO`", column.getColumnName().toString() );
+	}
+
+	@Test
+	public void testNonEntityBaseClass() {
 		buildMetadataSources( SubclassOfNoEntity.class, NoEntity.class );
 		EntityBinding binding = getEntityBinding( SubclassOfNoEntity.class );
 		assertEquals( "Wrong entity name", SubclassOfNoEntity.class.getName(), binding.getEntity().getName() );
@@ -74,16 +89,26 @@ public class MappedSuperclassWithAttributeOverrideTests extends BaseAnnotationBi
 	}
 
 	@MappedSuperclass
-	class MyMappedSuperClass {
+	class MyMappedSuperClassBase {
 		@Id
 		private int id;
+		String foo;
+	}
+
+	@MappedSuperclass
+	@AttributeOverride(name = "foo", column = @javax.persistence.Column(name = "SUPER_FOO"))
+	class MyMappedSuperClass extends MyMappedSuperClassBase {
 		String name;
-		int age;
 	}
 
 	@Entity
+	@AttributeOverrides( {
+			@AttributeOverride(name = "name", column = @javax.persistence.Column(name = "MY_NAME")),
+			@AttributeOverride(name = "foo", column = @javax.persistence.Column(name = "MY_FOO"))
+	})
 	class MyEntity extends MyMappedSuperClass {
 		private Long count;
+
 	}
 
 	class NoEntity {

@@ -47,13 +47,16 @@ import org.jboss.jandex.ClassInfo;
 import org.jboss.jandex.DotName;
 import org.jboss.jandex.FieldInfo;
 import org.jboss.jandex.MethodInfo;
+import org.jboss.logging.Logger;
 
 import org.hibernate.AnnotationException;
 import org.hibernate.AssertionFailure;
 import org.hibernate.HibernateException;
+import org.hibernate.internal.CoreMessageLogger;
 import org.hibernate.metamodel.source.annotations.AnnotationBindingContext;
 import org.hibernate.metamodel.source.annotations.JPADotNames;
 import org.hibernate.metamodel.source.annotations.attribute.AssociationAttribute;
+import org.hibernate.metamodel.source.annotations.attribute.AttributeOverride;
 import org.hibernate.metamodel.source.annotations.attribute.AttributeType;
 import org.hibernate.metamodel.source.annotations.attribute.MappedAttribute;
 import org.hibernate.metamodel.source.annotations.attribute.SimpleAttribute;
@@ -67,6 +70,11 @@ import org.hibernate.metamodel.source.annotations.util.ReflectionHelper;
  * @author Hardy Ferentschik
  */
 public class ConfiguredClass {
+
+	private static final CoreMessageLogger LOG = Logger.getMessageLogger(
+			CoreMessageLogger.class,
+			ConfiguredClass.class.getName()
+	);
 
 	/**
 	 * The parent of this configured class or {@code null} in case this configured class is the root of a hierarchy.
@@ -94,16 +102,6 @@ public class ConfiguredClass {
 	private final ConfiguredClassType configuredClassType;
 
 	/**
-	 * The attribute overrides defined on this entity
-	 */
-	private final List<AnnotationInstance> attributeOverrides;
-
-	/**
-	 * The association overrides defined on this entity;
-	 */
-	private final List<AnnotationInstance> associationOverrides;
-
-	/**
 	 * The id attributes
 	 */
 	private final Map<String, SimpleAttribute> idAttributeMap;
@@ -123,6 +121,12 @@ public class ConfiguredClass {
 	 */
 	private final Map<String, EmbeddableClass> embeddedClasses = new HashMap<String, EmbeddableClass>();
 
+	/**
+	 * A map of all attribute overrides defined in this class. The override name is "normalised", meaning as if specified
+	 * on class level. If the override is specified on attribute level the attribute name is used as prefix.
+	 */
+	private final Map<String, AttributeOverride> attributeOverrideMap;
+
 	private final Set<String> transientFieldNames = new HashSet<String>();
 	private final Set<String> transientMethodNames = new HashSet<String>();
 
@@ -138,17 +142,12 @@ public class ConfiguredClass {
 		this.clazz = context.classLoaderService().classForName( classInfo.toString() );
 		this.configuredClassType = determineType();
 		this.classAccessType = determineClassAccessType( defaultAccessType );
-
-		this.attributeOverrides = findAttributeOverrides();
-		this.associationOverrides = findAssociationOverrides();
-
 		this.simpleAttributeMap = new TreeMap<String, SimpleAttribute>();
 		this.idAttributeMap = new TreeMap<String, SimpleAttribute>();
 		this.associationAttributeMap = new TreeMap<String, AssociationAttribute>();
 
-		// find transient field and method names
-		findTransientFieldAndMethodNames();
 		collectAttributes();
+		attributeOverrideMap = Collections.unmodifiableMap( findAttributeOverrides() );
 	}
 
 	public String getName() {
@@ -199,6 +198,10 @@ public class ConfiguredClass {
 		return attribute;
 	}
 
+	public Map<String, AttributeOverride> getAttributeOverrideMap() {
+		return attributeOverrideMap;
+	}
+
 	@Override
 	public String toString() {
 		final StringBuilder sb = new StringBuilder();
@@ -244,6 +247,9 @@ public class ConfiguredClass {
 	 * Find all attributes for this configured class and add them to the corresponding map
 	 */
 	private void collectAttributes() {
+		// find transient field and method names
+		findTransientFieldAndMethodNames();
+
 		// use the class mate library to generic types
 		ResolvedTypeWithMembers resolvedType = context.resolveMemberTypes( context.getResolvedType( clazz ) );
 		for ( HierarchicType hierarchicType : resolvedType.allTypesAndOverrides() ) {
@@ -321,33 +327,10 @@ public class ConfiguredClass {
 
 			AccessType accessType = JandexHelper.getValueAsEnum( accessAnnotation, "value", AccessType.class );
 
-			// when class access type is field
-			// overriding access annotations must be placed on properties and have the access type PROPERTY
-			if ( AccessType.FIELD.equals( classAccessType ) ) {
-				if ( !( annotationTarget instanceof MethodInfo ) ) {
-					// todo log warning !?
-					continue;
-				}
-
-				if ( !AccessType.PROPERTY.equals( accessType ) ) {
-					// todo log warning !?
-					continue;
-				}
+			if ( !isExplicitAttributeAccessAnnotationPlacedCorrectly( annotationTarget, accessType ) ) {
+				continue;
 			}
 
-			// when class access type is property
-			// overriding access annotations must be placed on fields and have the access type FIELD
-			if ( AccessType.PROPERTY.equals( classAccessType ) ) {
-				if ( !( annotationTarget instanceof FieldInfo ) ) {
-					// todo log warning !?
-					continue;
-				}
-
-				if ( !AccessType.FIELD.equals( accessType ) ) {
-					// todo log warning !?
-					continue;
-				}
-			}
 
 			// the placement is correct, get the member
 			Member member;
@@ -385,6 +368,53 @@ public class ConfiguredClass {
 			}
 		}
 		return explicitAccessMembers;
+	}
+
+	private boolean isExplicitAttributeAccessAnnotationPlacedCorrectly(AnnotationTarget annotationTarget, AccessType accessType) {
+		// when the access type of the class is FIELD
+		// overriding access annotations must be placed on properties AND have the access type PROPERTY
+		if ( AccessType.FIELD.equals( classAccessType ) ) {
+			if ( !( annotationTarget instanceof MethodInfo ) ) {
+				LOG.tracef(
+						"The access type of class %s is AccessType.FIELD. To override the access for an attribute " +
+								"@Access has to be placed on the property (getter)", classInfo.name().toString()
+				);
+				return false;
+			}
+
+			if ( !AccessType.PROPERTY.equals( accessType ) ) {
+				LOG.tracef(
+						"The access type of class %s is AccessType.FIELD. To override the access for an attribute " +
+								"@Access has to be placed on the property (getter) with an access type of AccessType.PROPERTY. " +
+								"Using AccessType.FIELD on the property has no effect",
+						classInfo.name().toString()
+				);
+				return false;
+			}
+		}
+
+		// when the access type of the class is PROPERTY
+		// overriding access annotations must be placed on fields and have the access type FIELD
+		if ( AccessType.PROPERTY.equals( classAccessType ) ) {
+			if ( !( annotationTarget instanceof FieldInfo ) ) {
+				LOG.tracef(
+						"The access type of class %s is AccessType.PROPERTY. To override the access for a field " +
+								"@Access has to be placed on the field ", classInfo.name().toString()
+				);
+				return false;
+			}
+
+			if ( !AccessType.FIELD.equals( accessType ) ) {
+				LOG.tracef(
+						"The access type of class %s is AccessType.PROPERTY. To override the access for a field " +
+								"@Access has to be placed on the field with an access type of AccessType.FIELD. " +
+								"Using AccessType.PROPERTY on the field has no effect",
+						classInfo.name().toString()
+				);
+				return false;
+			}
+		}
+		return true;
 	}
 
 	private void createMappedProperty(Member member, ResolvedTypeWithMembers resolvedType) {
@@ -520,8 +550,13 @@ public class ConfiguredClass {
 				return resolvedMember.getType().getErasedType();
 			}
 		}
-		// todo - what to do here
-		return null;
+		throw new AssertionFailure(
+				String.format(
+						"Unable to resolve type of attribute %s of class %s",
+						name,
+						classInfo.name().toString()
+				)
+		);
 	}
 
 	/**
@@ -544,27 +579,41 @@ public class ConfiguredClass {
 		}
 	}
 
-	private List<AnnotationInstance> findAttributeOverrides() {
-		List<AnnotationInstance> attributeOverrideList = new ArrayList<AnnotationInstance>();
+	private Map<String, AttributeOverride> findAttributeOverrides() {
+		Map<String, AttributeOverride> attributeOverrideList = new HashMap<String, AttributeOverride>();
 
 		AnnotationInstance attributeOverrideAnnotation = JandexHelper.getSingleAnnotation(
 				classInfo,
 				JPADotNames.ATTRIBUTE_OVERRIDE
 		);
 		if ( attributeOverrideAnnotation != null ) {
-			attributeOverrideList.add( attributeOverrideAnnotation );
+			String prefix = createPathPrefix( attributeOverrideAnnotation );
+			AttributeOverride override = new AttributeOverride( prefix, attributeOverrideAnnotation );
+			attributeOverrideList.put( override.getAttributePath(), override );
 		}
 
 		AnnotationInstance attributeOverridesAnnotation = JandexHelper.getSingleAnnotation(
 				classInfo,
 				JPADotNames.ATTRIBUTE_OVERRIDES
 		);
-		if ( attributeOverrideAnnotation != null ) {
-			AnnotationInstance[] attributeOverride = attributeOverridesAnnotation.value().asNestedArray();
-			Collections.addAll( attributeOverrideList, attributeOverride );
+		if ( attributeOverridesAnnotation != null ) {
+			AnnotationInstance[] annotationInstances = attributeOverridesAnnotation.value().asNestedArray();
+			for ( AnnotationInstance annotationInstance : annotationInstances ) {
+				String prefix = createPathPrefix( annotationInstance );
+				AttributeOverride override = new AttributeOverride( prefix, annotationInstance );
+				attributeOverrideList.put( override.getAttributePath(), override );
+			}
 		}
-
 		return attributeOverrideList;
+	}
+
+	private String createPathPrefix(AnnotationInstance attributeOverrideAnnotation) {
+		String prefix = null;
+		AnnotationTarget target = attributeOverrideAnnotation.target();
+		if ( target instanceof FieldInfo || target instanceof MethodInfo ) {
+			prefix = JandexHelper.getPropertyName( target );
+		}
+		return prefix;
 	}
 
 	private List<AnnotationInstance> findAssociationOverrides() {

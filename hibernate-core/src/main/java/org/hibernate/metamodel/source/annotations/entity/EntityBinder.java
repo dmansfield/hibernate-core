@@ -67,6 +67,7 @@ import org.hibernate.metamodel.relational.UniqueKey;
 import org.hibernate.metamodel.source.annotations.HibernateDotNames;
 import org.hibernate.metamodel.source.annotations.JPADotNames;
 import org.hibernate.metamodel.source.annotations.attribute.AssociationAttribute;
+import org.hibernate.metamodel.source.annotations.attribute.AttributeOverride;
 import org.hibernate.metamodel.source.annotations.attribute.MappedAttribute;
 import org.hibernate.metamodel.source.annotations.attribute.SimpleAttribute;
 import org.hibernate.metamodel.source.annotations.attribute.state.binding.AttributeBindingStateImpl;
@@ -206,7 +207,7 @@ public class EntityBinder {
 		);
 		if ( whereAnnotation != null ) {
 			// no null check needed, it is a required attribute
-			entityBindingState.setWhereFilter( JandexHelper.getValueAsString( whereAnnotation, "clause" ) );
+			entityBindingState.setWhereFilter( JandexHelper.getValue( whereAnnotation, "clause", String.class ) );
 		}
 	}
 
@@ -409,9 +410,9 @@ public class EntityBinder {
 				entityClass.getClassInfo(), JPADotNames.TABLE
 		);
 		if ( tableAnnotation != null ) {
-			schemaName = JandexHelper.getValueAsString( tableAnnotation, "schema" );
-			catalogName = JandexHelper.getValueAsString( tableAnnotation, "catalog" );
-			String explicitTableName = JandexHelper.getValueAsString( tableAnnotation, "name" );
+			schemaName = JandexHelper.getValue( tableAnnotation, "schema", String.class );
+			catalogName = JandexHelper.getValue( tableAnnotation, "catalog", String.class );
+			String explicitTableName = JandexHelper.getValue( tableAnnotation, "name", String.class );
 			if ( StringHelper.isNotEmpty( explicitTableName ) ) {
 				tableName = meta.getNamingStrategy().tableName( explicitTableName );
 			}
@@ -477,7 +478,7 @@ public class EntityBinder {
 		);
 		String name;
 		if ( jpaEntityAnnotation.value( "name" ) == null ) {
-			name = entityClass.getName();
+			name = entityClass.getClass().getSimpleName();
 		}
 		else {
 			name = jpaEntityAnnotation.value( "name" ).asString();
@@ -569,7 +570,7 @@ public class EntityBinder {
 					)
 			);
 		}
-		String generator = JandexHelper.getValueAsString( generatedValueAnn, "generator" );
+		String generator = JandexHelper.getValue( generatedValueAnn, "generator", String.class );
 		IdGenerator idGenerator = null;
 		if ( StringHelper.isNotEmpty( generator ) ) {
 			idGenerator = meta.getIdGenerator( generator );
@@ -612,27 +613,58 @@ public class EntityBinder {
 	}
 
 	private void bindAttributes(EntityBinding entityBinding) {
+		// collect attribute overrides as we map the attributes
+		Map<String, AttributeOverride> attributeOverrideMap = new HashMap<String, AttributeOverride>();
+
 		// bind the attributes of this entity
 		AttributeContainer entity = entityBinding.getEntity();
-		bindAttributes( entityBinding, entity, entityClass );
+		bindAttributes( entityBinding, entity, entityClass, attributeOverrideMap );
 
 		// bind potential mapped super class attributes
+		attributeOverrideMap.putAll( entityClass.getAttributeOverrideMap() );
 		ConfiguredClass parent = entityClass.getParent();
 		Hierarchical superTypeContainer = entityBinding.getEntity().getSuperType();
-		while ( containsPotentialMappedSuperclassAttributes( parent ) ) {
-			bindAttributes( entityBinding, superTypeContainer, parent );
+		while ( containsMappedSuperclassAttributes( parent ) ) {
+			bindAttributes( entityBinding, superTypeContainer, parent, attributeOverrideMap );
+			addNewOverridesToMap( parent, attributeOverrideMap );
 			parent = parent.getParent();
 			superTypeContainer = superTypeContainer.getSuperType();
 		}
 	}
 
-	private boolean containsPotentialMappedSuperclassAttributes(ConfiguredClass parent) {
+	private void addNewOverridesToMap(ConfiguredClass parent, Map<String, AttributeOverride> attributeOverrideMap) {
+		Map<String, AttributeOverride> overrides = parent.getAttributeOverrideMap();
+		for ( Map.Entry<String, AttributeOverride> entry : overrides.entrySet() ) {
+			if ( !attributeOverrideMap.containsKey( entry.getKey() ) ) {
+				attributeOverrideMap.put( entry.getKey(), entry.getValue() );
+			}
+		}
+	}
+
+	private boolean containsMappedSuperclassAttributes(ConfiguredClass parent) {
 		return parent != null && ( ConfiguredClassType.MAPPED_SUPERCLASS.equals( parent.getConfiguredClassType() ) ||
 				ConfiguredClassType.NON_ENTITY.equals( parent.getConfiguredClassType() ) );
 	}
 
-	private void bindAttributes(EntityBinding entityBinding, AttributeContainer attributeContainer, ConfiguredClass configuredClass) {
+	/**
+	 * Creates attribute bindings for the attributes of {@code configuredClass}
+	 *
+	 * @param entityBinding The entity binding for the class we are currently binding
+	 * @param attributeContainer The domain attribute container to which to add the attribute (could be the entity itself, or a mapped super class
+	 * or a component)
+	 * @param configuredClass the configured containing the attributes to be bound
+	 * @param attributeOverrideMap a map with the accumulated attribute overrides
+	 */
+	private void bindAttributes(EntityBinding entityBinding, AttributeContainer attributeContainer, ConfiguredClass configuredClass, Map<String, AttributeOverride> attributeOverrideMap) {
 		for ( SimpleAttribute simpleAttribute : configuredClass.getSimpleAttributes() ) {
+			String attributeName = simpleAttribute.getName();
+
+			// if there is a override apply it
+			AttributeOverride override = attributeOverrideMap.get( attributeName );
+			if ( override != null ) {
+				simpleAttribute = SimpleAttribute.createSimpleAttribute( simpleAttribute, override.getColumnValues() );
+			}
+
 			bindSingleMappedAttribute(
 					entityBinding,
 					attributeContainer,
@@ -655,7 +687,7 @@ public class EntityBinder {
 		// bind potential mapped super class embeddables
 		ConfiguredClass parent = entityClass.getParent();
 		Hierarchical superTypeContainer = entityBinding.getEntity().getSuperType();
-		while ( containsPotentialMappedSuperclassAttributes( parent ) ) {
+		while ( containsMappedSuperclassAttributes( parent ) ) {
 			bindEmbeddedAttributes( entityBinding, superTypeContainer, parent );
 			parent = parent.getParent();
 			superTypeContainer = superTypeContainer.getSuperType();

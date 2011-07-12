@@ -115,6 +115,10 @@ public abstract class MappedAttribute implements Comparable<MappedAttribute> {
 		return sb.toString();
 	}
 
+	Map<DotName, List<AnnotationInstance>> annotations() {
+		return annotations;
+	}
+
 	/**
 	 * We need to check whether the is an explicit type specified via {@link org.hibernate.annotations.Type}.
 	 *

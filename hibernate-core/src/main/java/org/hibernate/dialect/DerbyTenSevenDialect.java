@@ -1,10 +1,10 @@
 /*
  * Hibernate, Relational Persistence for Idiomatic Java
  *
- * Copyright (c) 2008, Red Hat Middleware LLC or third-party contributors as
+ * Copyright (c) 2010, Red Hat Inc. or third-party contributors as
  * indicated by the @author tags or express copyright attribution
  * statements applied by the authors.  All third-party contributions are
- * distributed under license by Red Hat Middleware LLC.
+ * distributed under license by Red Hat Inc.
  *
  * This copyrighted material is made available to anyone wishing to use, modify,
  * copy, or redistribute it subject to the terms and conditions of the GNU
@@ -20,36 +20,16 @@
  * Free Software Foundation, Inc.
  * 51 Franklin Street, Fifth Floor
  * Boston, MA  02110-1301  USA
- *
  */
-package org.hibernate;
-import org.jboss.logging.Logger;
+package org.hibernate.dialect;
 
-import org.hibernate.internal.CoreMessageLogger;
+import java.sql.Types;
 
 /**
- * Indicates access to unfetched data outside of a session context.
- * For example, when an uninitialized proxy or collection is accessed
- * after the session was closed.
- *
- * @see Hibernate#initialize(java.lang.Object)
- * @see Hibernate#isInitialized(java.lang.Object)
- * @author Gavin King
+ * @author Strong Liu
  */
-public class LazyInitializationException extends HibernateException {
-
-    private static final CoreMessageLogger LOG = Logger.getMessageLogger(CoreMessageLogger.class,
-                                                                       LazyInitializationException.class.getName());
-
-	public LazyInitializationException(String msg) {
-		super(msg);
-        LOG.trace(msg, this);
-	}
-
+public class DerbyTenSevenDialect extends DerbyTenSixDialect{
+    public DerbyTenSevenDialect() {
+         registerColumnType( Types.BOOLEAN, "boolean" );
+    }
 }
-
-
-
-
-
-
